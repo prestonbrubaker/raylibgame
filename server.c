@@ -19,30 +19,26 @@ int main() {
 
     bind(server_fd, (struct sockaddr*)&addr, sizeof(addr));
     listen(server_fd, 5);
-    printf("Server listening on port %d...\n", PORT);
+    printf("HTTP Server listening on port %d...\n", PORT);
 
     while (1) {
-        int client_fd = accept(server_fd, NULL, NULL);
-        if (client_fd < 0) continue;
+        int client = accept(server_fd, NULL, NULL);
+        if (client < 0) continue;
 
-        printf("New player connected!\n");
+        char buffer[4096] = {0};
+        read(client, buffer, sizeof(buffer) - 1);
 
-        // Send welcome
-        char welcome[] = "WELCOME 1\n";
-        send(client_fd, welcome, strlen(welcome), 0);
+        printf("\n=== Received HTTP Request ===\n%s\n", buffer);
 
-        // Keep connection alive and relay (very simple)
-        while (1) {
-            char buffer[256] = {0};
-            int bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-            if (bytes <= 0) {
-                printf("Player disconnected\n");
-                close(client_fd);
-                break;
-            }
-            // Echo back to same client for now (for testing)
-            send(client_fd, buffer, bytes, 0);
-        }
+        // Very basic response
+        char response[] = 
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/plain\r\n"
+            "Connection: close\r\n\r\n"
+            "Position received\n";
+
+        write(client, response, strlen(response));
+        close(client);
     }
     return 0;
 }
