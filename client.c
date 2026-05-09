@@ -15,17 +15,12 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <netdb.h>
 #endif
 
-#define SERVER_IP "127.0.0.1"
-#define PORT 9099
+#define SERVER_HOST "willwill.immenseaccumulationonline.online"
+#define PORT 8080
 #define MAX_OTHER_PLAYERS 16
-
-typedef struct {
-    uint8_t type;
-    int32_t player_id;
-    float x, y, z;
-} NetMsg;
 
 typedef struct {
     int id;
@@ -49,26 +44,32 @@ int main(void) {
     WSAStartup(MAKEWORD(2, 2), &wsa);
 #endif
 
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    int sock = -1;
     struct sockaddr_in server_addr = {0};
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(PORT);
-    server_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
 
-    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == 0) {
-        printf("Connected to server!\n");
+    struct hostent *host = gethostbyname(SERVER_HOST);
+    if (host != NULL) {
+        memcpy(&server_addr.sin_addr, host->h_addr_list[0], host->h_length);
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == 0) {
+            printf("Connected to %s!\n", SERVER_HOST);
+        } else {
+            printf("Failed to connect to server\n");
+            sock = -1;
+        }
     } else {
-        printf("Failed to connect to server\n");
-        sock = -1;
+        printf("Could not resolve %s\n", SERVER_HOST);
     }
 
     int my_id = 0;
     if (sock != -1) {
-        NetMsg welcome;
-        if (recv(sock, &welcome, sizeof(welcome), 0) > 0 && welcome.type == 1) {
-            my_id = welcome.player_id;
-            printf("You are Player %d\n", my_id);
-        }
+        char buffer[128] = {0};
+        recv(sock, buffer, sizeof(buffer), 0);
+        sscanf(buffer, "WELCOME %d", &my_id);
+        printf("You are Player %d\n", my_id);
+
 #ifdef _WIN32
         u_long mode = 1; ioctlsocket(sock, FIONBIO, &mode);
 #else
@@ -85,7 +86,6 @@ int main(void) {
         float rotSpeed = 120.0f * dt;
         float moveSpeed = 12.0f * dt;
 
-        // === Arrow keys rotate camera ===
         if (IsKeyDown(KEY_LEFT))  yaw -= rotSpeed;
         if (IsKeyDown(KEY_RIGHT)) yaw += rotSpeed;
         if (IsKeyDown(KEY_UP))    pitch -= rotSpeed * 0.7f;
@@ -94,9 +94,7 @@ int main(void) {
         if (pitch > 85.0f) pitch = 85.0f;
         if (pitch < -85.0f) pitch = -85.0f;
 
-        // === WASD movement relative to facing direction ===
         float moveX = 0.0f, moveZ = 0.0f;
-
         if (IsKeyDown(KEY_W)) { moveX += sinf(yaw * DEG2RAD); moveZ += cosf(yaw * DEG2RAD); }
         if (IsKeyDown(KEY_S)) { moveX -= sinf(yaw * DEG2RAD); moveZ -= cosf(yaw * DEG2RAD); }
         if (IsKeyDown(KEY_A)) { moveX += sinf((yaw - 90.0f) * DEG2RAD); moveZ += cosf((yaw - 90.0f) * DEG2RAD); }
@@ -104,36 +102,35 @@ int main(void) {
 
         local.x += moveX * moveSpeed;
         local.z += moveZ * moveSpeed;
-        local.y = 0.0f;
 
-        // === Send position to server ===
         if (sock != -1) {
-            NetMsg update = {2, my_id, local.x, local.y, local.z};
-            send(sock, &update, sizeof(update), 0);
+            char msg[128];
+            sprintf(msg, "POS %d %.2f %.2f %.2f\n", my_id, local.x, local.y, local.z);
+            send(sock, msg, strlen(msg), 0);
         }
 
-        // === Receive updates from server ===
         if (sock != -1) {
-            NetMsg msg;
-            while (recv(sock, &msg, sizeof(msg), 0) > 0) {
-                if (msg.type == 2 && msg.player_id != my_id) {
+            char buffer[256] = {0};
+            int bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
+            if (bytes > 0) {
+                int id; float x, y, z;
+                if (sscanf(buffer, "POS %d %f %f %f", &id, &x, &y, &z) == 4 && id != my_id) {
                     bool found = false;
                     for (int i = 0; i < num_others; i++) {
-                        if (others[i].id == msg.player_id) {
-                            others[i].x = msg.x; others[i].y = msg.y; others[i].z = msg.z;
+                        if (others[i].id == id) {
+                            others[i].x = x; others[i].y = y; others[i].z = z;
                             found = true; break;
                         }
                     }
                     if (!found && num_others < MAX_OTHER_PLAYERS) {
-                        others[num_others].id = msg.player_id;
-                        others[num_others].x = msg.x; others[num_others].y = msg.y; others[num_others].z = msg.z;
+                        others[num_others].id = id;
+                        others[num_others].x = x; others[num_others].y = y; others[num_others].z = z;
                         num_others++;
                     }
                 }
             }
         }
 
-        // === Camera follows player with rotation ===
         float distance = 10.0f;
         float camX = local.x - sinf(yaw * DEG2RAD) * distance;
         float camZ = local.z - cosf(yaw * DEG2RAD) * distance;
@@ -142,40 +139,36 @@ int main(void) {
         camera.position = (Vector3){camX, camY, camZ};
         camera.target = (Vector3){local.x, local.y + 2.5f, local.z};
 
-        // === Draw ===
         BeginDrawing();
         ClearBackground(SKYBLUE);
 
         BeginMode3D(camera);
 
-            // === Black & White Checkerboard ===
-            for (int x = -20; x <= 20; x++) {
-                for (int z = -20; z <= 20; z++) {
-                    Color tileColor = ((x + z) % 2 == 0) ? BLACK : WHITE;
-                    DrawPlane((Vector3){x * 2.0f, 0.0f, z * 2.0f}, (Vector2){2.0f, 2.0f}, tileColor);
-                }
+        for (int x = -20; x <= 20; x++) {
+            for (int z = -20; z <= 20; z++) {
+                Color tileColor = ((x + z) % 2 == 0) ? BLACK : WHITE;
+                DrawPlane((Vector3){x * 2.0f, 0.0f, z * 2.0f}, (Vector2){2.0f, 2.0f}, tileColor);
             }
+        }
 
-            // Local player (blue)
-            DrawCube((Vector3){local.x, 1.5f, local.z}, 1.5f, 3.0f, 1.5f, BLUE);
-            DrawCubeWires((Vector3){local.x, 1.5f, local.z}, 1.5f, 3.0f, 1.5f, DARKBLUE);
+        DrawCube((Vector3){local.x, 1.5f, local.z}, 1.5f, 3.0f, 1.5f, BLUE);
+        DrawCubeWires((Vector3){local.x, 1.5f, local.z}, 1.5f, 3.0f, 1.5f, DARKBLUE);
 
-            // Other players
-            for (int i = 0; i < num_others; i++) {
-                Color c = (others[i].id % 3 == 0) ? RED : (others[i].id % 3 == 1) ? GREEN : ORANGE;
-                DrawCube((Vector3){others[i].x, 1.5f, others[i].z}, 1.5f, 3.0f, 1.5f, c);
-                DrawCubeWires((Vector3){others[i].x, 1.5f, others[i].z}, 1.5f, 3.0f, 1.5f, DARKGRAY);
-            }
+        for (int i = 0; i < num_others; i++) {
+            Color c = (others[i].id % 3 == 0) ? RED : (others[i].id % 3 == 1) ? GREEN : ORANGE;
+            DrawCube((Vector3){others[i].x, 1.5f, others[i].z}, 1.5f, 3.0f, 1.5f, c);
+            DrawCubeWires((Vector3){others[i].x, 1.5f, others[i].z}, 1.5f, 3.0f, 1.5f, DARKGRAY);
+        }
 
-            // Environment objects
-            DrawCube((Vector3){12, 4, 15}, 6, 8, 6, BROWN);
-            DrawCube((Vector3){-14, 3, -12}, 5, 6, 5, DARKGREEN);
+        DrawCube((Vector3){12, 4, 15}, 6, 8, 6, BROWN);
+        DrawCube((Vector3){-14, 3, -12}, 5, 6, 5, DARKGREEN);
 
         EndMode3D();
 
         DrawText(TextFormat("Player %d | Others: %d", my_id, num_others), 10, 10, 20, WHITE);
-        DrawText("WASD = Move  |  Arrow Keys = Look Around", 10, 40, 16, WHITE);
-        if (sock == -1) DrawText("OFFLINE", 10, 70, 20, RED);
+        DrawText("WASD = Move | Arrow Keys = Look Around", 10, 40, 16, WHITE);
+        DrawText(TextFormat("Connected to: %s:%d", SERVER_HOST, PORT), 10, 70, 16, WHITE);
+        if (sock == -1) DrawText("OFFLINE", 10, 100, 20, RED);
 
         EndDrawing();
     }
