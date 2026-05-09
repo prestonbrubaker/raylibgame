@@ -4,10 +4,8 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <fcntl.h>
 
 #define PORT 9099
-#define MAX_CLIENTS 16
 
 int main() {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -23,32 +21,27 @@ int main() {
     listen(server_fd, 5);
     printf("Server listening on port %d...\n", PORT);
 
-    int clients[MAX_CLIENTS];
-    int num_clients = 0;
-
     while (1) {
-        // Accept new clients
-        int new_client = accept(server_fd, NULL, NULL);
-        if (new_client >= 0 && num_clients < MAX_CLIENTS) {
-            clients[num_clients] = new_client;
-            char welcome[32];
-            sprintf(welcome, "WELCOME %d\n", num_clients + 1);
-            send(new_client, welcome, strlen(welcome), 0);
-            printf("Player %d connected\n", num_clients + 1);
-            num_clients++;
-        }
+        int client_fd = accept(server_fd, NULL, NULL);
+        if (client_fd < 0) continue;
 
-        // Relay messages between clients
-        for (int i = 0; i < num_clients; i++) {
+        printf("New player connected!\n");
+
+        // Send welcome
+        char welcome[] = "WELCOME 1\n";
+        send(client_fd, welcome, strlen(welcome), 0);
+
+        // Keep connection alive and relay (very simple)
+        while (1) {
             char buffer[256] = {0};
-            int bytes = recv(clients[i], buffer, sizeof(buffer) - 1, MSG_DONTWAIT);
-            if (bytes > 0) {
-                for (int j = 0; j < num_clients; j++) {
-                    if (i != j) {
-                        send(clients[j], buffer, bytes, 0);
-                    }
-                }
+            int bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+            if (bytes <= 0) {
+                printf("Player disconnected\n");
+                close(client_fd);
+                break;
             }
+            // Echo back to same client for now (for testing)
+            send(client_fd, buffer, bytes, 0);
         }
     }
     return 0;
